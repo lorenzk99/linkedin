@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
 from app.config import settings
-from app.db.models import Idea, Post, StyleProfile
+from app.db.models import Idea, Post, StyleProfile, GeneratedImage
 
 engine = create_async_engine(settings.database_url)
 async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
@@ -76,6 +76,21 @@ class PostRepository:
                 .limit(limit)
             )
             return list(result.scalars().all())
+
+    async def update_status(self, post_id: int, status: str) -> None:
+        async with async_session() as session:
+            post = await session.get(Post, post_id)
+            if post:
+                post.status = status
+                await session.commit()
+
+    async def save_image(self, post_id: int, file_path: str) -> GeneratedImage:
+        async with async_session() as session:
+            image = GeneratedImage(post_id=post_id, file_path=file_path, prompt_used="")
+            session.add(image)
+            await session.commit()
+            await session.refresh(image)
+            return image
 
 
 class StyleProfileRepository:

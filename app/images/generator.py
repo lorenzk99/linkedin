@@ -13,10 +13,10 @@ class ImageGenerator:
         self.output_dir = Path("data/generated_images")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def generate(self, topic: str, post_id: int) -> str:
+    async def generate(self, topic: str, post_id: int, colors: str | None = None) -> str:
         prompt = IMAGE_PROMPT_TEMPLATE.format(
             topic=topic,
-            colors="Blau, Weiss, dezentes Grau",
+            colors=colors or "Blau, Weiss, dezentes Grau",
             width=settings.linkedin_image_width,
             height=settings.linkedin_image_height,
         )
