@@ -1,11 +1,30 @@
 import asyncio
 import logging
 
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    MessageHandler,
+    filters,
+)
 
 from app.config import settings
-from app.bot.commands import cmd_start, cmd_queue, cmd_style, cmd_plan, post_init
-from app.bot.handlers import handle_idea, handle_generate_post, handle_list_ideas, handle_status
+from app.bot.commands import (
+    cmd_start,
+    cmd_queue,
+    cmd_style,
+    cmd_plan,
+    cmd_cluster,
+    post_init,
+)
+from app.bot.handlers import (
+    handle_idea,
+    handle_generate_post,
+    handle_list_ideas,
+    handle_status,
+    handle_callback,
+)
 from app.db.init import init_db
 
 logging.basicConfig(
@@ -13,6 +32,14 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+
+
+async def error_handler(update, context):
+    logger.error("Update %s verursachte Fehler: %s", update, context.error)
+    if update and update.effective_message:
+        await update.effective_message.reply_text(
+            "Ein Fehler ist aufgetreten. Bitte versuche es erneut."
+        )
 
 
 def main():
@@ -32,8 +59,11 @@ def main():
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("style", cmd_style))
+    app.add_handler(CommandHandler("cluster", cmd_cluster))
     app.add_handler(CommandHandler("plan", cmd_plan))
+    app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_idea))
+    app.add_error_handler(error_handler)
 
     logger.info("Bot gestartet. Warte auf Nachrichten...")
     app.run_polling()

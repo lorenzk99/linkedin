@@ -1,3 +1,6 @@
+import functools
+import logging
+
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -6,8 +9,11 @@ from app.db.repository import IdeaRepository
 from app.ai.post_generator import PostGenerator
 from app.ai.style_analyzer import StyleAnalyzer
 
+logger = logging.getLogger(__name__)
+
 
 def authorized(func):
+    @functools.wraps(func)
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         allowed = settings.allowed_user_ids
@@ -90,3 +96,29 @@ async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Offen: {stats['pending']}\n",
         parse_mode="Markdown",
     )
+
+
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data or ""
+
+    if data.startswith("post_detail:"):
+        post_id = int(data.split(":")[1])
+        from app.db.repository import PostRepository
+        repo = PostRepository()
+        post = await repo.get(post_id)
+        if post:
+            await query.edit_message_text(
+                f"<b>Post #{post.id}</b>\n\n"
+                f"{post.content}\n\n"
+                f"<i>Cluster: {post.cluster or '---'} | "
+                f"Zeichen: {post.char_count}</i>",
+                parse_mode="HTML",
+            )
+        else:
+            await query.edit_message_text(f"Post #{post_id} nicht gefunden.")
+    else:
+        logger.warning("Unbekannter Callback: %s", data)
+        await query.edit_message_text("Unbekannte Aktion.")
