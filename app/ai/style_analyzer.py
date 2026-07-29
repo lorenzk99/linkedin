@@ -1,4 +1,6 @@
 import json
+import logging
+import re
 from pathlib import Path
 
 import anthropic
@@ -7,6 +9,15 @@ from app.config import settings
 from app.ai.prompts import STYLE_ANALYSIS_PROMPT
 from app.db.models import StyleProfile
 from app.db.repository import StyleProfileRepository
+
+logger = logging.getLogger(__name__)
+
+
+def _extract_json(text: str) -> dict:
+    match = re.search(r"```(?:json)?\s*\n?(.*?)```", text, re.DOTALL)
+    if match:
+        return json.loads(match.group(1).strip())
+    return json.loads(text.strip())
 
 
 class StyleAnalyzer:
@@ -26,7 +37,9 @@ class StyleAnalyzer:
             messages=[{"role": "user", "content": prompt}],
         )
 
-        result = json.loads(response.content[0].text)
+        raw = response.content[0].text
+        logger.info("Stil-Analyse Antwort erhalten (%d Zeichen)", len(raw))
+        result = _extract_json(raw)
 
         profile = StyleProfile(
             name="default",
