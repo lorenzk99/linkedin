@@ -14,6 +14,8 @@ from app.bot.commands import (
     cmd_start,
     cmd_queue,
     cmd_style,
+    cmd_style_import,
+    cmd_style_done,
     cmd_plan,
     cmd_cluster,
     post_init,
@@ -62,6 +64,8 @@ def main():
     app.add_handler(CommandHandler("queue", cmd_queue))
     app.add_handler(CommandHandler("status", handle_status))
     app.add_handler(CommandHandler("style", cmd_style))
+    app.add_handler(CommandHandler("style_import", cmd_style_import))
+    app.add_handler(CommandHandler("style_done", cmd_style_done))
     app.add_handler(CommandHandler("cluster", cmd_cluster))
     app.add_handler(CommandHandler("plan", cmd_plan))
     app.add_handler(CallbackQueryHandler(handle_callback))

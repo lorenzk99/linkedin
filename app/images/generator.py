@@ -5,6 +5,7 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.ai.prompts import IMAGE_PROMPT_TEMPLATE
+from app.images.templates import CLUSTER_IMAGE_STYLES
 
 
 class ImageGenerator:
@@ -13,12 +14,20 @@ class ImageGenerator:
         self.output_dir = Path("data/generated_images")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    async def generate(self, topic: str, post_id: int, colors: str | None = None) -> str:
+    async def generate(
+        self,
+        topic: str,
+        post_id: int,
+        colors: str | None = None,
+        cluster: str | None = None,
+    ) -> str:
+        style_info = CLUSTER_IMAGE_STYLES.get(cluster or "", {})
+
         prompt = IMAGE_PROMPT_TEMPLATE.format(
             topic=topic,
-            colors=colors or "Blau, Weiss, dezentes Grau",
-            width=settings.linkedin_image_width,
-            height=settings.linkedin_image_height,
+            colors=colors or style_info.get("colors", "Blau, Weiss, dezentes Grau"),
+            style=style_info.get("style", "Modern, clean, professionell, Business-Kontext"),
+            elements=style_info.get("elements", "Professionelle, thematisch passende Elemente"),
         )
 
         response = await self.client.images.generate(

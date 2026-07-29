@@ -9,6 +9,7 @@ from app.db.repository import IdeaRepository, PostRepository
 from app.ai.post_generator import PostGenerator
 from app.images.generator import ImageGenerator
 from app.images.templates import CLUSTER_IMAGE_STYLES
+from app.utils.formatters import validate_post_length, extract_hashtags
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,6 @@ def authorized(func):
 # ---------------------------------------------------------------------------
 
 def _post_keyboard(post_id: int) -> InlineKeyboardMarkup:
-    """Build the inline keyboard for post review actions."""
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton(
@@ -63,13 +63,6 @@ async def _edit_callback_message(
     text: str,
     reply_markup: InlineKeyboardMarkup | None = None,
 ) -> None:
-    """Edit the message that triggered a callback query.
-
-    Picks ``edit_message_caption`` for document messages and
-    ``edit_message_text`` for plain text messages.  Pass
-    ``InlineKeyboardMarkup([])`` (or omit *reply_markup*) to strip the
-    inline keyboard.
-    """
     markup = reply_markup if reply_markup is not None else InlineKeyboardMarkup([])
     if query.message.document:
         await query.edit_message_caption(caption=text, reply_markup=markup)
@@ -78,12 +71,25 @@ async def _edit_callback_message(
 
 
 def _cluster_colors(cluster: str | None) -> str:
-    """Return cluster-specific image colors or a neutral fallback."""
     if cluster:
         style = CLUSTER_IMAGE_STYLES.get(cluster, {})
         if "colors" in style:
             return style["colors"]
     return "Blau, Weiss, dezentes Grau"
+
+
+def _format_quality_info(content: str) -> str:
+    info = validate_post_length(content)
+    hashtags = extract_hashtags(content)
+    parts = [f"Zeichen: {info['length']}"]
+    if info["optimal"]:
+        parts.append("Laenge: Optimal")
+    elif info["too_short"]:
+        parts.append("Laenge: Etwas kurz")
+    elif info["too_long"]:
+        parts.append("Laenge: Etwas lang")
+    parts.append(f"Hashtags: {len(hashtags)}")
+    return " | ".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -92,7 +98,6 @@ def _cluster_colors(cluster: str | None) -> str:
 
 @authorized
 async def handle_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Save an incoming text message as a post idea with auto-detected cluster."""
     text = update.message.text
     if not text:
         await update.message.reply_text(
@@ -100,7 +105,17 @@ async def handle_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Auto-detect cluster via Claude Haiku
+    # Check if user is in style import mode
+    if context.user_data.get("importing_style"):
+        posts = context.user_data.setdefault("style_posts", [])
+        posts.append(text)
+        count = len(posts)
+        await update.message.reply_text(
+            f"Post {count} gespeichert.\n\n"
+            f"{'Sende weitere Posts oder /style_done wenn du fertig bist.' if count < 10 else 'Du hast ' + str(count) + ' Posts. Sende /style_done um die Analyse zu starten, oder schicke weitere.'}"
+        )
+        return
+
     generator = PostGenerator()
     cluster = None
     try:
@@ -108,7 +123,6 @@ async def handle_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error("Cluster-Erkennung fehlgeschlagen: %s", e)
 
-    # Persist idea with cluster
     repo = IdeaRepository()
     idea = await repo.create(
         text=text,
@@ -130,7 +144,6 @@ async def handle_idea(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def handle_generate_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Generate a full LinkedIn post (text + image) from a stored idea."""
     if not context.args:
         await update.message.reply_text(
             "Bitte gib die Ideen-ID an: /post &lt;id&gt;",
@@ -154,7 +167,7 @@ async def handle_generate_post(update: Update, context: ContextTypes.DEFAULT_TYP
         "Generiere LinkedIn-Post... das dauert einen Moment."
     )
 
-    # 1. Generate post text via Anthropic Claude ---------------------------
+    # 1. Generate post text
     generator = PostGenerator()
     try:
         generated = await generator.generate(idea.text, idea.cluster)
@@ -165,7 +178,7 @@ async def handle_generate_post(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return
 
-    # 2. Save post to DB ---------------------------------------------------
+    # 2. Save post to DB
     post_repo = PostRepository()
     post = await post_repo.create(
         idea_id=idea.id,
@@ -173,30 +186,33 @@ async def handle_generate_post(update: Update, context: ContextTypes.DEFAULT_TYP
         cluster=generated.cluster,
     )
 
-    # 3. Generate image via DALL-E with cluster-specific colors ------------
+    # 3. Generate image with cluster-specific style
     colors = _cluster_colors(generated.cluster)
     image_gen = ImageGenerator()
     image_path = None
     try:
-        image_path = await image_gen.generate(idea.text, post.id, colors=colors)
+        image_path = await image_gen.generate(
+            idea.text, post.id, colors=colors, cluster=generated.cluster,
+        )
         await post_repo.save_image(post.id, image_path)
     except Exception as e:
         logger.error("Bild-Generierung fehlgeschlagen: %s", e)
 
-    # 4. Mark idea as generated --------------------------------------------
+    # 4. Mark idea as generated
     await idea_repo.mark_generated(idea.id)
 
-    # 5. Send post text ----------------------------------------------------
+    # 5. Send post text with quality info
+    quality = _format_quality_info(generated.content)
     await update.message.reply_text(
-        f"<b>LinkedIn-Post (Entwurf #{post.id})</b>\n\n"
+        f"<b>LinkedIn-Post (Entwurf #{post.id})</b>\n"
+        f"<i>{generated.cluster}</i>\n\n"
         f"{generated.content}\n\n"
         f"---\n"
-        f"Cluster: {generated.cluster}\n"
-        f"Zeichen: {generated.char_count}",
+        f"{quality}",
         parse_mode="HTML",
     )
 
-    # 6. Send image as DOCUMENT with inline keyboard -----------------------
+    # 6. Send image as DOCUMENT with inline keyboard
     keyboard = _post_keyboard(post.id)
     if image_path:
         try:
@@ -226,7 +242,6 @@ async def handle_generate_post(update: Update, context: ContextTypes.DEFAULT_TYP
 
 @authorized
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Route inline keyboard button presses to their action handlers."""
     query = update.callback_query
     await query.answer()
 
@@ -257,7 +272,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def _handle_regenerate(query, post_id: int) -> None:
-    """Generate a completely new post variant (text + image)."""
     post_repo = PostRepository()
     post = await post_repo.get(post_id)
     if not post:
@@ -270,10 +284,8 @@ async def _handle_regenerate(query, post_id: int) -> None:
         await _edit_callback_message(query, "Zugehoerige Idee nicht gefunden.")
         return
 
-    # Remove old keyboard and show progress
     await _edit_callback_message(query, "Generiere neuen Post-Entwurf...")
 
-    # Generate new post text
     generator = PostGenerator()
     try:
         generated = await generator.generate(idea.text, post.cluster)
@@ -285,34 +297,33 @@ async def _handle_regenerate(query, post_id: int) -> None:
         )
         return
 
-    # Save as new post record
     new_post = await post_repo.create(
         idea_id=idea.id,
         content=generated.content,
         cluster=generated.cluster,
     )
 
-    # Send new post text
+    quality = _format_quality_info(generated.content)
     await query.message.reply_text(
-        f"<b>LinkedIn-Post (Neuer Entwurf #{new_post.id})</b>\n\n"
+        f"<b>LinkedIn-Post (Neuer Entwurf #{new_post.id})</b>\n"
+        f"<i>{generated.cluster}</i>\n\n"
         f"{generated.content}\n\n"
         f"---\n"
-        f"Cluster: {generated.cluster}\n"
-        f"Zeichen: {generated.char_count}",
+        f"{quality}",
         parse_mode="HTML",
     )
 
-    # Generate new image with cluster-specific colors
     colors = _cluster_colors(generated.cluster)
     image_gen = ImageGenerator()
     image_path = None
     try:
-        image_path = await image_gen.generate(idea.text, new_post.id, colors=colors)
+        image_path = await image_gen.generate(
+            idea.text, new_post.id, colors=colors, cluster=generated.cluster,
+        )
         await post_repo.save_image(new_post.id, image_path)
     except Exception as e:
         logger.error("Bild-Generierung fehlgeschlagen: %s", e)
 
-    # Send new image (or fallback text) with fresh keyboard
     keyboard = _post_keyboard(new_post.id)
     if image_path:
         try:
@@ -337,7 +348,6 @@ async def _handle_regenerate(query, post_id: int) -> None:
 
 
 async def _handle_new_image(query, post_id: int) -> None:
-    """Generate only a new image for an existing post."""
     post_repo = PostRepository()
     post = await post_repo.get(post_id)
     if not post:
@@ -347,14 +357,15 @@ async def _handle_new_image(query, post_id: int) -> None:
     idea_repo = IdeaRepository()
     idea = await idea_repo.get(post.idea_id)
 
-    # Remove old keyboard and show progress
     await _edit_callback_message(query, "Generiere neues Bild...")
 
     colors = _cluster_colors(post.cluster)
     image_gen = ImageGenerator()
     topic = idea.text if idea else "LinkedIn Post"
     try:
-        image_path = await image_gen.generate(topic, post_id, colors=colors)
+        image_path = await image_gen.generate(
+            topic, post_id, colors=colors, cluster=post.cluster,
+        )
         await post_repo.save_image(post_id, image_path)
     except Exception as e:
         logger.error("Bild-Generierung fehlgeschlagen: %s", e)
@@ -364,7 +375,6 @@ async def _handle_new_image(query, post_id: int) -> None:
         )
         return
 
-    # Send new image with keyboard
     keyboard = _post_keyboard(post_id)
     try:
         with open(image_path, "rb") as f:
@@ -383,7 +393,6 @@ async def _handle_new_image(query, post_id: int) -> None:
 
 
 async def _handle_approve(query, post_id: int) -> None:
-    """Mark the post as approved and remove the inline keyboard."""
     post_repo = PostRepository()
     post = await post_repo.get(post_id)
     if not post:
@@ -400,7 +409,6 @@ async def _handle_approve(query, post_id: int) -> None:
 
 @authorized
 async def handle_list_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List recent ideas with cluster tags."""
     repo = IdeaRepository()
     ideas = await repo.list_recent(limit=10)
     if not ideas:
@@ -424,17 +432,22 @@ async def handle_list_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @authorized
 async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show pipeline statistics including post queue count."""
     idea_repo = IdeaRepository()
     post_repo = PostRepository()
     stats = await idea_repo.get_stats()
     drafts = await post_repo.list_drafts()
+
+    from app.ai.style_analyzer import StyleAnalyzer
+    analyzer = StyleAnalyzer()
+    profile = await analyzer.get_profile()
+    style_status = f"aktiv ({profile.name})" if profile else "nicht eingerichtet — nutze /style_import"
 
     await update.message.reply_text(
         f"<b>Pipeline-Status:</b>\n\n"
         f"Ideen gesamt: {stats['total']}\n"
         f"Posts generiert: {stats['generated']}\n"
         f"Offen: {stats['pending']}\n"
-        f"Posts in Warteschlange: {len(drafts)}",
+        f"Posts in Warteschlange: {len(drafts)}\n"
+        f"Stil-Profil: {style_status}",
         parse_mode="HTML",
     )
