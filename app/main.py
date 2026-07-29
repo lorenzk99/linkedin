@@ -42,13 +42,16 @@ async def error_handler(update, context):
         )
 
 
-def main():
-    asyncio.run(init_db())
+async def on_startup(application):
+    await init_db()
+    await post_init(application)
 
+
+def main():
     app = (
         ApplicationBuilder()
         .token(settings.telegram_bot_token)
-        .post_init(post_init)
+        .post_init(on_startup)
         .build()
     )
 
